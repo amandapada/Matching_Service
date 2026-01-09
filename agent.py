@@ -8,8 +8,9 @@ import os
 import json
 import logging
 from typing import Dict, List, Any, Optional
-from llama_index.llms.openai import OpenAI
-from pydantic import BaseModel, Field
+# Lazy import to avoid Pydantic schema issues at startup
+# from llama_index.llms.openai import OpenAI
+from pydantic import BaseModel, Field, ConfigDict
 
 from supabase_client import get_supabase_client
 from compatibility import compute_features
@@ -25,13 +26,12 @@ AGENT_TEMPERATURE = float(os.getenv('AGENT_TEMPERATURE', '0.8'))
 # Response schema for structured output
 class MatchDecision(BaseModel):
     """Structured decision output from the LLM"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     decision: str = Field(description="One of: 'strong_match', 'possible_match', 'avoid'")
     score_0_100: float = Field(description="Overall compatibility score from 0-100", ge=0, le=100)
     breakdown: Dict[str, float] = Field(description="Score breakdown by dimension")
     reason: str = Field(description="Short explanation of why this is or isn't a good match")
-    
-    class Config:
-        arbitrary_types_allowed = True
 
 
 # System prompt for the agent
@@ -131,6 +131,9 @@ class RoommateMatchingAgent:
     def __init__(self):
         if not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY environment variable is required for agent")
+        
+        # Lazy import to avoid Pydantic schema issues at module import time
+        from llama_index.llms.openai import OpenAI
         
         try:
             self.llm = OpenAI(

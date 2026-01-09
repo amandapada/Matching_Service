@@ -8,10 +8,7 @@ import os
 import json
 import logging
 from typing import Dict, List, Any, Optional
-from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
-from llama_index.core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from supabase_client import get_supabase_client
@@ -32,6 +29,9 @@ class MatchDecision(BaseModel):
     score_0_100: float = Field(description="Overall compatibility score from 0-100", ge=0, le=100)
     breakdown: Dict[str, float] = Field(description="Score breakdown by dimension")
     reason: str = Field(description="Short explanation of why this is or isn't a good match")
+    
+    class Config:
+        arbitrary_types_allowed = True
 
 
 # System prompt for the agent
@@ -132,18 +132,20 @@ class RoommateMatchingAgent:
         if not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY environment variable is required for agent")
         
-        self.llm = OpenAI(
-            model=OPENAI_MODEL,
-            temperature=AGENT_TEMPERATURE,
-            api_key=OPENAI_API_KEY
-        )
+        try:
+            self.llm = OpenAI(
+                model=OPENAI_MODEL,
+                temperature=AGENT_TEMPERATURE,
+                api_key=OPENAI_API_KEY
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI LLM: {e}")
+            raise ValueError(f"Failed to initialize OpenAI LLM: {e}")
         
         # Create tools for the agent
-        self.tools = [
-            FunctionTool.from_defaults(fn=get_user_profile_tool),
-            FunctionTool.from_defaults(fn=get_candidates_tool),
-            FunctionTool.from_defaults(fn=compute_features_tool),
-        ]
+        # Note: We're not using ReActAgent with tools directly to avoid Pydantic schema issues
+        # Instead, we call the functions directly in find_matches
+        self.tools = []  # Tools are called directly, not through agent framework
         
         # Prompt template for structured output
         self.prompt_template = MATCHING_SYSTEM_PROMPT + """

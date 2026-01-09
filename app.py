@@ -124,6 +124,9 @@ class MatchResponse(BaseModel):
     matches: List[Match]
     total_eligible_users: int
     algorithm_version: str
+    
+    class Config:
+        arbitrary_types_allowed = True
 
 # Simple in-memory cache (can upgrade to Redis later)
 _match_cache: Dict[str, Any] = {}

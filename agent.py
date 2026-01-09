@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
-from llama_index.core.program import LLMTextCompletionProgram
+from llama_index.core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from supabase_client import get_supabase_client
@@ -145,12 +145,31 @@ class RoommateMatchingAgent:
             FunctionTool.from_defaults(fn=compute_features_tool),
         ]
         
-        # For structured output, we'll use LLMTextCompletionProgram
-        self.decision_program = LLMTextCompletionProgram.from_defaults(
-            output_cls=MatchDecision,
-            llm=self.llm,
-            prompt_template_str=MATCHING_SYSTEM_PROMPT + "\n\nUser Profile:\n{user_profile}\n\nCandidate Profile:\n{candidate_profile}\n\nFeature Scores:\n{features}\n\nProvide your matching decision as JSON."
-        )
+        # Prompt template for structured output
+        self.prompt_template = MATCHING_SYSTEM_PROMPT + """
+User Profile:
+{user_profile}
+Candidate Profile:
+{candidate_profile}
+Feature Scores:
+{features}
+Provide your matching decision as a valid JSON object with exactly these keys:
+{{
+  "decision": "strong_match" or "possible_match" or "avoid",
+  "score_0_100": number between 0 and 100,
+  "breakdown": {{
+    "mbti_compatibility": number,
+    "lifestyle_match": number,
+    "budget_alignment": number,
+    "location_match": number,
+    "date_compatibility": number,
+    "tolerance_match": number,
+    "interests_overlap": number,
+    "music_taste": number
+  }},
+  "reason": "short explanation string"
+}}
+JSON Response:"""
     
     def evaluate_candidate(
         self,
@@ -193,11 +212,32 @@ class RoommateMatchingAgent:
         }
         
         try:
-            # Call LLM with structured output
-            decision = self.decision_program(
+            # Build prompt
+            prompt = self.prompt_template.format(
                 user_profile=json.dumps(user_summary, indent=2),
                 candidate_profile=json.dumps(candidate_summary, indent=2),
                 features=json.dumps(features, indent=2)
+            )
+            
+            # Call LLM directly
+            response = self.llm.complete(prompt)
+            response_text = str(response).strip()
+            
+            # Parse JSON from response
+            # Handle potential markdown code blocks
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+            response_text = response_text.strip()
+            
+            result = json.loads(response_text)
+            
+            decision = MatchDecision(
+                decision=result.get("decision", "possible_match"),
+                score_0_100=float(result.get("score_0_100", 50)),
+                breakdown=result.get("breakdown", {}),
+                reason=result.get("reason", "No reason provided")
             )
             
             return decision

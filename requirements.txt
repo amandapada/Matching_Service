@@ -4,6 +4,6 @@ supabase==2.10.0
 python-dotenv==1.0.1
 pydantic==2.10.0
 pydantic-settings==2.6.0
-slowapi==0.1.9
-llama-index-core>=0.10.24
-llama-index-llms-openai>=0.1.15
+llama-index-core==0.11.0
+llama-index-llms-openai==0.2.0
+openai>=1.0.0

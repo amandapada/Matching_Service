@@ -48,10 +48,10 @@ app = FastAPI(
     description="Cost-safe hybrid roommate matching: direct scoring + optional AI agent"
 )
 
-# Rate limiting
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Rate limiting - temporarily disabled
+# limiter = Limiter(key_func=get_remote_address)
+# app.state.limiter = limiter
+# app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS
 app.add_middleware(
@@ -305,7 +305,7 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             )
 
 @app.post("/roommate-matching", response_model=MatchResponse)
-@limiter.limit(os.getenv('RATE_LIMIT_PER_MINUTE', '10') + "/minute")
+# @limiter.limit(os.getenv('RATE_LIMIT_PER_MINUTE', '10') + "/minute")  # Temporarily disabled
 async def find_matches(request: MatchRequest, http_request: Request):
     """
     Primary endpoint for roommate matching.

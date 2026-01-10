@@ -30,6 +30,35 @@ from compatibility import calculate_compatibility_score
 
 load_dotenv()
 
+def sanitize_response(obj):
+    """
+    Recursively convert an object to plain Python types that are JSON-serializable.
+    This prevents AsyncGenerator and other LlamaIndex types from causing FastAPI errors.
+    """
+    if obj is None:
+        return None
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    elif isinstance(obj, dict):
+        return {str(k): sanitize_response(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [sanitize_response(item) for item in obj]
+    elif hasattr(obj, 'model_dump'):
+        # Pydantic v2 model
+        return sanitize_response(obj.model_dump())
+    elif hasattr(obj, 'dict'):
+        # Pydantic v1 model
+        return sanitize_response(obj.dict())
+    elif hasattr(obj, '__dict__'):
+        # Generic object - be careful to avoid serializing methods/generators
+        try:
+            return sanitize_response({k: v for k, v in vars(obj).items() if not callable(v) and not k.startswith('_')})
+        except Exception:
+            return str(obj)
+    else:
+        # Fallback: convert to string
+        return str(obj)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,6 +68,10 @@ USE_AGENT_BY_DEFAULT = os.getenv('USE_AGENT_BY_DEFAULT', 'true').lower() == 'tru
 ENABLE_RESULT_CACHING = os.getenv('ENABLE_RESULT_CACHING', 'true').lower() == 'true'
 CACHE_TTL_MINUTES = int(os.getenv('CACHE_TTL_MINUTES', '5'))
 FALLBACK_TO_DIRECT_ON_ERROR = os.getenv('FALLBACK_TO_DIRECT_ON_ERROR', 'true').lower() == 'true'
+
+# Check if OpenAI API key is available for agent matching
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
+AGENT_AVAILABLE = bool(OPENAI_API_KEY)  # True only if API key is present and non-empty
 
 # CORS origins (same pattern as TS)
 CORS_ORIGINS_STR = os.getenv('CORS_ORIGINS', '["http://localhost:5173"]')
@@ -61,7 +94,14 @@ async def startup_event():
         logger.info("Direct matching available ✓")
     except Exception as e:
         logger.warning(f"Startup check warning: {e}")
-    logger.info("Service ready - agent will be loaded on first request if needed")
+    
+    # Log agent availability status
+    if AGENT_AVAILABLE:
+        logger.info("OpenAI API key found - Agent matching available ✓")
+    else:
+        logger.warning("⚠️ OpenAI API key NOT found - Agent matching disabled, will use direct matching only")
+    
+    logger.info("Service ready")
 
 # Rate limiting - temporarily disabled
 # limiter = Limiter(key_func=get_remote_address)
@@ -281,7 +321,7 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             filters=filters_dict
         )
         
-        # Format to API response
+        # Format to API response - ensure all data is plain Python types
         matches = []
         for match in matches_data:
             # Extract preferences/profiles (handle array vs object)
@@ -293,18 +333,23 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             if isinstance(profile, list) and len(profile) > 0:
                 profile = profile[0]
             
+            # Convert breakdown to plain dict to avoid any type issues
+            breakdown = match.get("compatibility_breakdown", {})
+            if not isinstance(breakdown, dict):
+                breakdown = dict(breakdown) if hasattr(breakdown, 'items') else {}
+            
             matches.append(Match(
                 match_id=f"{request.user_id}_{match['target_user']['id']}",
                 target_user=TargetUser(
-                    id=match["target_user"]["id"],
-                    first_name=match["target_user"]["first_name"],
-                    last_name=match["target_user"]["last_name"],
-                    mbti_type=match["target_user"]["mbti_type"],
+                    id=str(match["target_user"]["id"]),
+                    first_name=str(match["target_user"]["first_name"]),
+                    last_name=str(match["target_user"]["last_name"]),
+                    mbti_type=str(match["target_user"]["mbti_type"]),
                     roommate_preferences=RoommatePreferences(**prefs) if prefs else None,
                     roommate_profiles=RoommateProfile(**profile) if profile else None
                 ),
-                compatibility_score=match["compatibility_score"],
-                compatibility_breakdown=CompatibilityBreakdown(**match["compatibility_breakdown"]),
+                compatibility_score=float(match["compatibility_score"]),
+                compatibility_breakdown=CompatibilityBreakdown(**breakdown),
                 created_at=datetime.utcnow().isoformat()
             ))
         
@@ -317,7 +362,11 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             algorithm_version="v2.0.0-agent-llm"
         )
         
-        return response
+        # Sanitize the response to ensure no AsyncGenerator or other problematic types leak through
+        try:
+            return sanitize_response(response.model_dump())
+        except AttributeError:
+            return sanitize_response(response.dict())
         
     except Exception as e:
         logger.error(f"Agent matching error: {e}", exc_info=True)
@@ -353,10 +402,18 @@ async def find_matches(request: MatchRequest, http_request: Request):
     """
     try:
         # Decision tree: agent or direct?
-        use_agent = (
+        # First check: Is agent even available? (API key must be present)
+        # This avoids the overhead of exception handling when API key is missing
+        want_agent = (
             (request.query and request.query.strip()) or 
             USE_AGENT_BY_DEFAULT
         )
+        
+        # Only use agent if both: user wants it AND it's available (API key present)
+        use_agent = want_agent and AGENT_AVAILABLE
+        
+        if want_agent and not AGENT_AVAILABLE:
+            logger.info(f"Agent requested but API key missing - falling back to direct matching for user {request.user_id}")
         
         if use_agent:
             logger.info(f"Agent matching for user {request.user_id}: {request.query}")
@@ -410,6 +467,8 @@ async def health_check():
         "service": "roommate-matching-agent",
         "version": "2.0.0-hybrid",
         "agent_enabled": USE_AGENT_BY_DEFAULT,
+        "agent_available": AGENT_AVAILABLE,  # True if OpenAI API key is configured
+        "fallback_mode": "direct_matching" if not AGENT_AVAILABLE else None,
         "cache_enabled": ENABLE_RESULT_CACHING
     }
 

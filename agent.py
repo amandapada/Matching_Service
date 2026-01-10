@@ -7,7 +7,8 @@ and makes its own compatibility judgments using LLM reasoning.
 import os
 import json
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
+import copy
 # Lazy import to avoid Pydantic schema issues at startup
 # from llama_index.llms.openai import OpenAI
 from pydantic import BaseModel, Field, ConfigDict
@@ -16,6 +17,33 @@ from supabase_client import get_supabase_client
 from compatibility import compute_features
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """
+    Recursively convert an object to plain Python types that are JSON-serializable.
+    This prevents AsyncGenerator and other LlamaIndex types from leaking through.
+    """
+    if obj is None:
+        return None
+    elif isinstance(obj, (str, int, float, bool)):
+        return obj
+    elif isinstance(obj, dict):
+        return {str(k): sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(item) for item in obj]
+    elif hasattr(obj, 'model_dump'):
+        # Pydantic v2 model
+        return sanitize_for_json(obj.model_dump())
+    elif hasattr(obj, 'dict'):
+        # Pydantic v1 model
+        return sanitize_for_json(obj.dict())
+    elif hasattr(obj, '__dict__'):
+        # Generic object with __dict__
+        return sanitize_for_json(vars(obj))
+    else:
+        # Fallback: convert to string
+        return str(obj)
 
 # Get settings from environment
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
@@ -224,9 +252,16 @@ JSON Response:"""
                 features=json.dumps(features, indent=2)
             )
             
-            # Call LLM directly
+            # Call LLM directly and extract just the text content
+            # This prevents AsyncGenerator and other internal types from leaking
             response = self.llm.complete(prompt)
-            response_text = str(response).strip()
+            
+            # Extract text from CompletionResponse - use .text attribute if available
+            if hasattr(response, 'text'):
+                response_text = response.text
+            else:
+                response_text = str(response)
+            response_text = response_text.strip()
             
             # Parse JSON from response
             # Handle potential markdown code blocks
@@ -322,29 +357,47 @@ JSON Response:"""
         # Take top N
         top_matches = evaluated_matches[:limit]
         
-        # Format for API response
+        # Format for API response - convert everything to plain Python types
+        # This ensures no AsyncGenerator or other LlamaIndex types leak through
         matches = []
         for match_data in top_matches:
             candidate = match_data["candidate"]
             decision = match_data["decision"]
             
+            # Extract plain values from Pydantic model to avoid type introspection issues
+            # Use sanitize_for_json to ensure all nested types are plain Python
+            if hasattr(decision, 'model_dump'):
+                breakdown_dict = decision.model_dump().get('breakdown', {})
+            elif hasattr(decision, 'dict'):
+                breakdown_dict = decision.dict().get('breakdown', {})
+            elif hasattr(decision.breakdown, 'items'):
+                breakdown_dict = dict(decision.breakdown)
+            else:
+                breakdown_dict = decision.breakdown
+            
+            # Sanitize all nested data
+            breakdown_dict = sanitize_for_json(breakdown_dict)
+            prefs = sanitize_for_json(candidate.get("roommate_preferences"))
+            profiles = sanitize_for_json(candidate.get("roommate_profiles"))
+            
             matches.append({
                 "target_user": {
-                    "id": candidate["id"],
-                    "first_name": candidate["first_name"],
-                    "last_name": candidate["last_name"],
-                    "mbti_type": candidate["mbti_type"],
-                    "roommate_preferences": candidate.get("roommate_preferences"),
-                    "roommate_profiles": candidate.get("roommate_profiles")
+                    "id": str(candidate["id"]),
+                    "first_name": str(candidate["first_name"]),
+                    "last_name": str(candidate["last_name"]),
+                    "mbti_type": str(candidate["mbti_type"]),
+                    "roommate_preferences": prefs,
+                    "roommate_profiles": profiles
                 },
-                "compatibility_score": decision.score_0_100,
-                "compatibility_breakdown": decision.breakdown,
-                "decision": decision.decision,
-                "reason": decision.reason
+                "compatibility_score": float(decision.score_0_100),
+                "compatibility_breakdown": breakdown_dict,
+                "decision": str(decision.decision),
+                "reason": str(decision.reason)
             })
         
         logger.info(f"Returning {len(matches)} matches")
-        return matches
+        # Final sanitization pass to ensure no problematic types remain
+        return sanitize_for_json(matches)
 
 
 # Singleton instance

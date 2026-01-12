@@ -1,7 +1,5 @@
-"""
-BAABA Room
-
-mate Matching Agent Service
+""" 
+BAABA Roommate Matching Agent Service
 
 Cost-safe hybrid Python service for roommate compatibility scoring.
 """

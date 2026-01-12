@@ -9,69 +9,33 @@ This keeps 90% of requests free while enabling AI features for power users.
 """
 import os
 import logging
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 from functools import lru_cache
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
-# Prevent agent import during type checking to avoid schema generation issues
-if TYPE_CHECKING:
-    pass  # Type checking only - agent won't be imported
+# Temporarily disabled due to compatibility issue with FastAPI 0.115.0
 # from slowapi import Limiter, _rate_limit_exceeded_handler
 # from slowapi.util import get_remote_address
 # from slowapi.errors import RateLimitExceeded
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 from supabase_client import get_supabase_client
 from compatibility import calculate_compatibility_score
 
 load_dotenv()
-
-def sanitize_response(obj):
-    """
-    Recursively convert an object to plain Python types that are JSON-serializable.
-    This prevents AsyncGenerator and other LlamaIndex types from causing FastAPI errors.
-    """
-    if obj is None:
-        return None
-    elif isinstance(obj, (str, int, float, bool)):
-        return obj
-    elif isinstance(obj, dict):
-        return {str(k): sanitize_response(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [sanitize_response(item) for item in obj]
-    elif hasattr(obj, 'model_dump'):
-        # Pydantic v2 model
-        return sanitize_response(obj.model_dump())
-    elif hasattr(obj, 'dict'):
-        # Pydantic v1 model
-        return sanitize_response(obj.dict())
-    elif hasattr(obj, '__dict__'):
-        # Generic object - be careful to avoid serializing methods/generators
-        try:
-            return sanitize_response({k: v for k, v in vars(obj).items() if not callable(v) and not k.startswith('_')})
-        except Exception:
-            return str(obj)
-    else:
-        # Fallback: convert to string
-        return str(obj)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Cost control settings
-USE_AGENT_BY_DEFAULT = os.getenv('USE_AGENT_BY_DEFAULT', 'true').lower() == 'true'  # Changed to 'true' for agent as default
+USE_AGENT_BY_DEFAULT = os.getenv('USE_AGENT_BY_DEFAULT', 'true').lower() == 'true'  # Agent is default
 ENABLE_RESULT_CACHING = os.getenv('ENABLE_RESULT_CACHING', 'true').lower() == 'true'
 CACHE_TTL_MINUTES = int(os.getenv('CACHE_TTL_MINUTES', '5'))
 FALLBACK_TO_DIRECT_ON_ERROR = os.getenv('FALLBACK_TO_DIRECT_ON_ERROR', 'true').lower() == 'true'
-
-# Check if OpenAI API key is available for agent matching
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
-AGENT_AVAILABLE = bool(OPENAI_API_KEY)  # True only if API key is present and non-empty
 
 # CORS origins (same pattern as TS)
 CORS_ORIGINS_STR = os.getenv('CORS_ORIGINS', '["http://localhost:5173"]')
@@ -84,24 +48,6 @@ app = FastAPI(
     version="2.0.0-hybrid",
     description="Cost-safe hybrid roommate matching: direct scoring + optional AI agent"
 )
-
-@app.on_event("startup")
-async def startup_event():
-    """Startup event to handle any initialization issues gracefully"""
-    logger.info("Service starting up...")
-    # Test that direct matching works (agent will be lazy-loaded on first use)
-    try:
-        logger.info("Direct matching available ✓")
-    except Exception as e:
-        logger.warning(f"Startup check warning: {e}")
-    
-    # Log agent availability status
-    if AGENT_AVAILABLE:
-        logger.info("OpenAI API key found - Agent matching available ✓")
-    else:
-        logger.warning("⚠️ OpenAI API key NOT found - Agent matching disabled, will use direct matching only")
-    
-    logger.info("Service ready")
 
 # Rate limiting - temporarily disabled
 # limiter = Limiter(key_func=get_remote_address)
@@ -117,28 +63,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request/Response Models
-# Configure all models to allow arbitrary types to avoid LlamaIndex AsyncGenerator issues
-_model_config = ConfigDict(arbitrary_types_allowed=True)
 
+# Request/Response Models
 class MatchFilters(BaseModel):
-    model_config = _model_config
     budget_max: Optional[int] = None
     location: Optional[str] = None
     mbti_types: Optional[List[str]] = None
     min_date: Optional[str] = None
     max_date: Optional[str] = None
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class MatchRequest(BaseModel):
-    model_config = _model_config
     user_id: str = Field(..., description="UUID of requesting user")
     limit: int = Field(default=20, ge=1, le=100)
     min_score: int = Field(default=60, ge=0, le=110)
     filters: Optional[MatchFilters] = None
     query: Optional[str] = Field(None, description="Natural language query (triggers agent)")
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class RoommatePreferences(BaseModel):
-    model_config = _model_config
     budget: Optional[int] = None
     location: Optional[str] = None
     move_in_date: Optional[str] = None
@@ -147,27 +94,33 @@ class RoommatePreferences(BaseModel):
     visitors: Optional[int] = None
     smoking_tolerance: Optional[bool] = None
     pets_tolerance: Optional[bool] = None
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class RoommateProfile(BaseModel):
-    model_config = _model_config
     bio: Optional[str] = None
     school: Optional[str] = None
     year_of_study: Optional[str] = None
     major: Optional[str] = None
     interests: Optional[List[str]] = None
     instagram_handle: Optional[str] = None
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class TargetUser(BaseModel):
-    model_config = _model_config
     id: str
     first_name: str
     last_name: str
     mbti_type: str
     roommate_preferences: Optional[RoommatePreferences] = None
     roommate_profiles: Optional[RoommateProfile] = None
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class CompatibilityBreakdown(BaseModel):
-    model_config = _model_config
     mbti_compatibility: float
     lifestyle_match: float
     budget_alignment: float
@@ -176,23 +129,31 @@ class CompatibilityBreakdown(BaseModel):
     tolerance_match: float
     interests_overlap: float
     music_taste: float
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class Match(BaseModel):
-    model_config = _model_config
     match_id: str
     target_user: TargetUser
     compatibility_score: float
     compatibility_breakdown: CompatibilityBreakdown
     created_at: str
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 class MatchResponse(BaseModel):
-    model_config = _model_config
     matches: List[Match]
     total_eligible_users: int
     algorithm_version: str
+    
+    model_config = {"arbitrary_types_allowed": True}
+
 
 # Simple in-memory cache (can upgrade to Redis later)
 _match_cache: Dict[str, Any] = {}
+
 
 def get_cache_key(user_id: str, request: MatchRequest) -> str:
     """Generate cache key based on request parameters"""
@@ -201,10 +162,10 @@ def get_cache_key(user_id: str, request: MatchRequest) -> str:
     filters_str = str(request.filters.dict() if request.filters else {})
     return f"{user_id}:{request.limit}:{request.min_score}:{filters_str}:{time_window}"
 
+
 def direct_matching(request: MatchRequest) -> MatchResponse:
     """
     Direct Python scoring without LLM.
-    
     This is the DEFAULT path - fast, free, and predictable.
     Uses pure Python math functions from compatibility.py.
     """
@@ -232,7 +193,6 @@ def direct_matching(request: MatchRequest) -> MatchResponse:
     # Fetch candidates
     filters_dict = request.filters.dict() if request.filters else None
     candidates = db.get_candidate_users(request.user_id, filters_dict)
-    
     logger.info(f"Direct matching: {len(candidates)} candidates for user {request.user_id}")
     
     # Calculate scores using pure Python functions
@@ -289,10 +249,10 @@ def direct_matching(request: MatchRequest) -> MatchResponse:
     
     return response
 
+
 def agent_matching(request: MatchRequest) -> MatchResponse:
     """
     LlamaIndex agent-based matching with LLM-driven decisions.
-    
     This is the OPT-IN path - costs money but provides AI-powered matching.
     Only called when request.query is provided OR USE_AGENT_BY_DEFAULT=true.
     
@@ -302,14 +262,13 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
     
     The LLM makes the final compatibility decision, not a sum of scores.
     """
+    from agent import get_agent
+    
     logger.info(f"🤖 Agent matching for user {request.user_id}")
     
     try:
-        # Lazy import inside function to prevent FastAPI schema generation issues
-        # This import only happens when the function is actually called, not during schema generation
-        import importlib
-        agent_module = importlib.import_module('agent')
-        agent = agent_module.get_agent()
+        # Get agent instance
+        agent = get_agent()
         
         # Call agent to find matches
         # Note: query is not yet used, but could be used for semantic filtering
@@ -321,7 +280,7 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             filters=filters_dict
         )
         
-        # Format to API response - ensure all data is plain Python types
+        # Format to API response
         matches = []
         for match in matches_data:
             # Extract preferences/profiles (handle array vs object)
@@ -333,23 +292,18 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             if isinstance(profile, list) and len(profile) > 0:
                 profile = profile[0]
             
-            # Convert breakdown to plain dict to avoid any type issues
-            breakdown = match.get("compatibility_breakdown", {})
-            if not isinstance(breakdown, dict):
-                breakdown = dict(breakdown) if hasattr(breakdown, 'items') else {}
-            
             matches.append(Match(
                 match_id=f"{request.user_id}_{match['target_user']['id']}",
                 target_user=TargetUser(
-                    id=str(match["target_user"]["id"]),
-                    first_name=str(match["target_user"]["first_name"]),
-                    last_name=str(match["target_user"]["last_name"]),
-                    mbti_type=str(match["target_user"]["mbti_type"]),
+                    id=match["target_user"]["id"],
+                    first_name=match["target_user"]["first_name"],
+                    last_name=match["target_user"]["last_name"],
+                    mbti_type=match["target_user"]["mbti_type"],
                     roommate_preferences=RoommatePreferences(**prefs) if prefs else None,
                     roommate_profiles=RoommateProfile(**profile) if profile else None
                 ),
-                compatibility_score=float(match["compatibility_score"]),
-                compatibility_breakdown=CompatibilityBreakdown(**breakdown),
+                compatibility_score=match["compatibility_score"],
+                compatibility_breakdown=CompatibilityBreakdown(**match["compatibility_breakdown"]),
                 created_at=datetime.utcnow().isoformat()
             ))
         
@@ -362,33 +316,21 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
             algorithm_version="v2.0.0-agent-llm"
         )
         
-        # Sanitize the response to ensure no AsyncGenerator or other problematic types leak through
-        try:
-            return sanitize_response(response.model_dump())
-        except AttributeError:
-            return sanitize_response(response.dict())
+        return response
         
     except Exception as e:
         logger.error(f"Agent matching error: {e}", exc_info=True)
-        
-        # Always fallback to direct matching on any error (import, schema, runtime, etc.)
         if FALLBACK_TO_DIRECT_ON_ERROR:
-            logger.warning(f"Falling back to direct matching due to agent error: {type(e).__name__}: {str(e)}")
-            try:
-                return direct_matching(request)
-            except Exception as fallback_error:
-                logger.error(f"Direct matching fallback also failed: {fallback_error}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Both agent and direct matching failed. Direct error: {str(fallback_error)}"
-                )
+            logger.warning("Falling back to direct matching due to agent error")
+            return direct_matching(request)
         else:
             raise HTTPException(
                 status_code=500,
                 detail=f"Agent matching failed: {str(e)}"
             )
 
-@app.post("/roommate-matching")
+
+@app.post("/roommate-matching", response_model=MatchResponse)
 # @limiter.limit(os.getenv('RATE_LIMIT_PER_MINUTE', '10') + "/minute")  # Temporarily disabled
 async def find_matches(request: MatchRequest, http_request: Request):
     """
@@ -402,23 +344,13 @@ async def find_matches(request: MatchRequest, http_request: Request):
     """
     try:
         # Decision tree: agent or direct?
-        # First check: Is agent even available? (API key must be present)
-        # This avoids the overhead of exception handling when API key is missing
-        want_agent = (
-            (request.query and request.query.strip()) or 
+        use_agent = (
+            (request.query and request.query.strip()) or
             USE_AGENT_BY_DEFAULT
         )
         
-        # Only use agent if both: user wants it AND it's available (API key present)
-        use_agent = want_agent and AGENT_AVAILABLE
-        
-        if want_agent and not AGENT_AVAILABLE:
-            logger.info(f"Agent requested but API key missing - falling back to direct matching for user {request.user_id}")
-        
         if use_agent:
             logger.info(f"Agent matching for user {request.user_id}: {request.query}")
-            # agent_matching already has comprehensive fallback logic built-in
-            # It will catch ALL errors (import, schema, runtime) and fallback to direct matching
             response = agent_matching(request)
         else:
             logger.info(f"Direct matching for user {request.user_id}")
@@ -430,34 +362,14 @@ async def find_matches(request: MatchRequest, http_request: Request):
         # match_records = [...]
         # db.upsert_match_records(match_records)
         
-        # Convert to dict to avoid Pydantic schema issues with LlamaIndex types
-        if isinstance(response, MatchResponse):
-            try:
-                return response.model_dump()  # Pydantic v2
-            except AttributeError:
-                return response.dict()  # Pydantic v1 fallback
         return response
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in find_matches: {e}", exc_info=True)
-        # If it's a schema error, try direct matching as fallback
-        error_str = str(e)
-        if ("AsyncGenerator" in error_str or "pydantic" in error_str.lower()) and FALLBACK_TO_DIRECT_ON_ERROR:
-            logger.warning("Schema error detected, falling back to direct matching")
-            try:
-                fallback_response = direct_matching(request)
-                if isinstance(fallback_response, MatchResponse):
-                    try:
-                        return fallback_response.model_dump()
-                    except AttributeError:
-                        return fallback_response.dict()
-                return fallback_response
-            except Exception as fallback_error:
-                logger.error(f"Fallback also failed: {fallback_error}")
-                raise HTTPException(status_code=500, detail=str(fallback_error))
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health_check():
@@ -467,10 +379,9 @@ async def health_check():
         "service": "roommate-matching-agent",
         "version": "2.0.0-hybrid",
         "agent_enabled": USE_AGENT_BY_DEFAULT,
-        "agent_available": AGENT_AVAILABLE,  # True if OpenAI API key is configured
-        "fallback_mode": "direct_matching" if not AGENT_AVAILABLE else None,
         "cache_enabled": ENABLE_RESULT_CACHING
     }
+
 
 @app.get("/admin/stats")
 async def get_stats():
@@ -480,6 +391,7 @@ async def get_stats():
         "cache_enabled": ENABLE_RESULT_CACHING,
         "rate_limit": os.getenv('RATE_LIMIT_PER_MINUTE', '10'),
     }
+
 
 if __name__ == "__main__":
     import uvicorn

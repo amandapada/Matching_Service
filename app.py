@@ -273,7 +273,7 @@ def agent_matching(request: MatchRequest) -> MatchResponse:
         # Call agent to find matches
         # Note: query is not yet used, but could be used for semantic filtering
         filters_dict = request.filters.dict() if request.filters else None
-        matches_data = agent.find_matches(
+        matches_data = await agent.find_matches(
             user_id=request.user_id,
             limit=request.limit,
             min_score=request.min_score,

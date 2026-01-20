@@ -183,7 +183,7 @@ Provide your matching decision as a valid JSON object with exactly these keys:
 
 JSON Response:"""
     
-    def evaluate_candidate(
+    async def evaluate_candidate(
         self,
         user_profile: Dict[str, Any],
         candidate_profile: Dict[str, Any],
@@ -239,6 +239,7 @@ JSON Response:"""
             response = self.llm.complete(prompt)
             response_text = str(response).strip()
             
+            response = await self.llm.acomplete(prompt)
             # Parse JSON from response
             # Handle potential markdown code blocks
             if response_text.startswith("```"):
@@ -278,67 +279,44 @@ JSON Response:"""
                 reason=f"Fallback decision due to error: {str(e)}"
             )
     
-    def find_matches(
-        self,
-        user_id: str,
-        limit: int = 20,
-        min_score: int = 60,
-        filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+    async def find_matches(self, user_id, limit=20, min_score=60, filters=None):
         """
-        Find and rank compatible roommates using LLM-driven decisions.
-        
-        Args:
-            user_id: UUID of requesting user
-            limit: Maximum number of matches to return
-            min_score: Minimum compatibility score (0-100)
-            filters: Optional filters (budget, location, MBTI, dates)
-            
-        Returns:
-            List of match dicts ready for API response
+        Find and rank compatible roommates using parallel LLM-driven decisions.
         """
-        logger.info(f"Agent finding matches for user {user_id} (limit={limit}, min_score={min_score})")
+        logger.info(f"Agent finding matches for user {user_id} (limit={limit})")
         
-        # Fetch user profile
+        # 1. Setup: Fetch user and all candidates
         user_profile = get_user_profile_tool(user_id)
-        
-        # Fetch candidates
         candidates = get_candidates_tool(user_id, filters)
-        logger.info(f"Evaluating {len(candidates)} candidates")
-        
-        # Evaluate each candidate with LLM
-        evaluated_matches = []
-        for candidate in candidates:
+        logger.info(f"Evaluating {len(candidates)} candidates in parallel")
+
+        # 2. Define the individual task worker
+        async def process_one(candidate):
             try:
-                # Compute features
                 features = compute_features_tool(user_profile, candidate)
-                
-                # Get LLM decision
-                decision = self.evaluate_candidate(user_profile, candidate, features)
-                
-                # Only include if meets minimum score
-                if decision.score_0_100 >= min_score:
-                    evaluated_matches.append({
-                        "candidate": candidate,
-                        "decision": decision
-                    })
-                    
+                decision = await self.evaluate_candidate(user_profile, candidate, features)
+                return {"candidate": candidate, "decision": decision}
             except Exception as e:
                 logger.error(f"Error evaluating candidate {candidate.get('id')}: {e}")
-                continue
-        
-        # Sort by score descending
+                return None
+
+
+        results = await asyncio.gather(*[process_one(c) for c in candidates])
+
+        # 3. Filter out None (failed) results and low scores
+        evaluated_matches = [
+            r for r in results 
+            if r is not None and r["decision"].score_0_100 >= min_score
+        ]
+
+        # 4. Sort and Format
         evaluated_matches.sort(key=lambda x: x["decision"].score_0_100, reverse=True)
-        
-        # Take top N
         top_matches = evaluated_matches[:limit]
         
-        # Format for API response
         matches = []
         for match_data in top_matches:
             candidate = match_data["candidate"]
             decision = match_data["decision"]
-            
             matches.append({
                 "target_user": {
                     "id": candidate["id"],
@@ -354,7 +332,6 @@ JSON Response:"""
                 "reason": decision.reason
             })
         
-        logger.info(f"Returning {len(matches)} matches")
         return matches
 
 

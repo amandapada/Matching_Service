@@ -250,7 +250,7 @@ def direct_matching(request: MatchRequest) -> MatchResponse:
     return response
 
 
-def agent_matching(request: MatchRequest) -> MatchResponse:
+async def agent_matching(request: MatchRequest) -> MatchResponse:
     """
     LlamaIndex agent-based matching with LLM-driven decisions.
     This is the OPT-IN path - costs money but provides AI-powered matching.

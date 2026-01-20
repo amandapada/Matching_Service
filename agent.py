@@ -7,11 +7,11 @@ and makes its own compatibility judgments using LLM reasoning.
 import os
 import json
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
-from llama_index.core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from supabase_client import get_supabase_client
@@ -33,7 +33,6 @@ class MatchDecision(BaseModel):
     breakdown: Dict[str, float] = Field(description="Score breakdown by dimension")
     reason: str = Field(description="Short explanation of why this is or isn't a good match")
     
-    # Fix for Pydantic v2 async generator error
     model_config = {
         "arbitrary_types_allowed": True
     }
@@ -155,34 +154,34 @@ class RoommateMatchingAgent:
         # Prompt template for structured output
         self.prompt_template = MATCHING_SYSTEM_PROMPT + """
 
-User Profile:
-{user_profile}
+            User Profile:
+            {user_profile}
 
-Candidate Profile:
-{candidate_profile}
+            Candidate Profile:
+            {candidate_profile}
 
-Feature Scores:
-{features}
+            Feature Scores:
+            {features}
 
-Provide your matching decision as a valid JSON object with exactly these keys:
-{{
-  "decision": "strong_match" or "possible_match" or "avoid",
-  "score_0_100": number between 0 and 100,
-  "breakdown": {{
-    "mbti_compatibility": number,
-    "lifestyle_match": number,
-    "budget_alignment": number,
-    "location_match": number,
-    "date_compatibility": number,
-    "tolerance_match": number,
-    "interests_overlap": number,
-    "music_taste": number
-  }},
-  "reason": "short explanation string"
-}}
+            Provide your matching decision as a valid JSON object with exactly these keys:
+            {{
+            "decision": "strong_match" or "possible_match" or "avoid",
+            "score_0_100": number between 0 and 100,
+            "breakdown": {{
+                "mbti_compatibility": number,
+                "lifestyle_match": number,
+                "budget_alignment": number,
+                "location_match": number,
+                "date_compatibility": number,
+                "tolerance_match": number,
+                "interests_overlap": number,
+                "music_taste": number
+            }},
+            "reason": "short explanation string"
+            }}
 
-JSON Response:"""
-    
+            JSON Response:"""
+                
     async def evaluate_candidate(
         self,
         user_profile: Dict[str, Any],
@@ -236,17 +235,15 @@ JSON Response:"""
             )
             
             # Call LLM directly
-            response = self.llm.complete(prompt)
+            response = await self.llm.acomplete(prompt)
             response_text = str(response).strip()
             
-            response = await self.llm.acomplete(prompt)
             # Parse JSON from response
             # Handle potential markdown code blocks
-            if response_text.startswith("```"):
-                response_text = response_text.split("```")[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
-            response_text = response_text.strip()
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0]
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0]
             
             result = json.loads(response_text)
             
@@ -283,7 +280,7 @@ JSON Response:"""
         """
         Find and rank compatible roommates using parallel LLM-driven decisions.
         """
-        logger.info(f"Agent finding matches for user {user_id} (limit={limit})")
+        logger.info(f"Agent finding matches for user {user_id}")
         
         # 1. Setup: Fetch user and all candidates
         user_profile = get_user_profile_tool(user_id)

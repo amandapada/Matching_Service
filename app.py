@@ -264,7 +264,7 @@ async def agent_matching(request: MatchRequest) -> MatchResponse:
     """
     from agent import get_agent
     
-    logger.info(f"🤖 Agent matching for user {request.user_id}")
+    logger.info(f"Agent matching for user {request.user_id}")
     
     try:
         # Get agent instance
@@ -351,7 +351,7 @@ async def find_matches(request: MatchRequest, http_request: Request):
         
         if use_agent:
             logger.info(f"Agent matching for user {request.user_id}: {request.query}")
-            response = agent_matching(request)
+            response = await agent_matching(request)
         else:
             logger.info(f"Direct matching for user {request.user_id}")
             response = direct_matching(request)

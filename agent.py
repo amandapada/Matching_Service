@@ -258,20 +258,19 @@ class RoommateMatchingAgent:
             
         except Exception as e:
             logger.error(f"Error evaluating candidate: {e}", exc_info=True)
-            # Fallback: use feature scores
-            total_features = sum(features.values())
+            # Ensure fallback keys match the Pydantic schema
             return MatchDecision(
                 decision="possible_match",
-                score_0_100=min(100, total_features),
+                score_0_100=min(100, sum(features.values())),
                 breakdown={
-                    "mbti_compatibility": features["mbti_compatibility_score"],
-                    "lifestyle_match": features["lifestyle_match_score"],
-                    "budget_alignment": features["budget_alignment_score"],
-                    "location_match": features["location_match_score"],
-                    "date_compatibility": features["date_compatibility_score"],
-                    "tolerance_match": features["tolerance_match_score"],
-                    "interests_overlap": features["interests_overlap_score"],
-                    "music_taste": features["music_taste_score"]
+                    "mbti_compatibility": features.get("mbti_compatibility_score", 0),
+                    "lifestyle_match": features.get("lifestyle_match_score", 0),
+                    "budget_alignment": features.get("budget_alignment_score", 0),
+                    "location_match": features.get("location_match_score", 0),
+                    "date_compatibility": features.get("date_compatibility_score", 0),
+                    "tolerance_match": features.get("tolerance_match_score", 0),
+                    "interests_overlap": features.get("interests_overlap_score", 0),
+                    "music_taste": features.get("music_taste_score", 0)
                 },
                 reason=f"Fallback decision due to error: {str(e)}"
             )
@@ -287,15 +286,18 @@ class RoommateMatchingAgent:
         candidates = get_candidates_tool(user_id, filters)
         logger.info(f"Evaluating {len(candidates)} candidates in parallel")
 
+        semaphore = asyncio.Semaphore(10)
+
         # 2. Define the individual task worker
         async def process_one(candidate):
-            try:
-                features = compute_features_tool(user_profile, candidate)
-                decision = await self.evaluate_candidate(user_profile, candidate, features)
-                return {"candidate": candidate, "decision": decision}
-            except Exception as e:
-                logger.error(f"Error evaluating candidate {candidate.get('id')}: {e}")
-                return None
+            async with semaphore:
+                try:
+                    features = compute_features_tool(user_profile, candidate)
+                    decision = await self.evaluate_candidate(user_profile, candidate, features)
+                    return {"candidate": candidate, "decision": decision}
+                except Exception as e:
+                    logger.error(f"Error evaluating candidate {candidate.get('id')}: {e}")
+                    return None
 
 
         results = await asyncio.gather(*[process_one(c) for c in candidates])
@@ -314,6 +316,15 @@ class RoommateMatchingAgent:
         for match_data in top_matches:
             candidate = match_data["candidate"]
             decision = match_data["decision"]
+
+        prefs = candidate.get("roommate_preferences")
+        if isinstance(prefs, list) and len(prefs) > 0:
+            prefs = prefs[0]
+            
+        profile = candidate.get("roommate_profiles")
+        if isinstance(profile, list) and len(profile) > 0:
+            profile = profile[0]
+
             matches.append({
                 "target_user": {
                     "id": candidate["id"],
